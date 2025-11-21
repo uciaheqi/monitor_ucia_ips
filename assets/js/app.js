@@ -1,8 +1,8 @@
 // Configuración para Google Sheets API y OAuth
 // Complete estos valores con los datos de su proyecto en Google Cloud
-const CLIENT_ID = "PON_AQUI_TU_CLIENT_ID.apps.googleusercontent.com";
-const API_KEY = "PON_AQUI_TU_API_KEY";
-const SHEET_ID = "PON_AQUI_EL_ID_DE_LA_HOJA";
+const CLIENT_ID = "105432716361922120239.apps.googleusercontent.com";
+const API_KEY = "AIzaSyCXcAM_mI-f6cRv-iwQ2ewDR12Yo7UZAl0";
+const SHEET_ID = "1r_OmMJirLBC33Gjtl-mzlAxYKodnK-ld1ARlei7ut7k";
 const SHEET_NAME = "BASE_UCI"; // Ajuste si su pestaña tiene otro nombre
 
 // Alcances y documentación de la API
