@@ -5,8 +5,12 @@ const SHEET_NAME = "BASE_UCI";
 // Debe crear un ID de cliente OAuth 2.0 para aplicación web
 // en Google Cloud Console y una API Key del mismo proyecto.
 // No se recomienda exponer credenciales de cuenta de servicio en un frontend estático.
-const CLIENT_ID = "105432716361922120239.apps.googleusercontent.com";
+const CLIENT_ID = "ucia-522@total-earth-477513-h7.iam.gserviceaccount.com";
 const API_KEY = "d073135b5ce946b2577a46df5c4cd5beff5cfca0";
+
+
+
+
 
 // Ámbitos requeridos
 const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
