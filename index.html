@@ -2,192 +2,187 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Panel UCI · Dashboard con Google Sheets</title>
+    <title>Panel UCI · Google Sheets</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <!-- Estilos -->
     <link rel="stylesheet" href="assets/css/styles.css">
 
-    <!-- Librerías externas -->
+    <!-- Google APIs -->
+    <script src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer onload="gisLoaded()"></script>
+
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-    <!-- Google APIs -->
-    <script src="https://apis.google.com/js/api.js" async defer onload="gapiLoaded()"></script>
-    <script src="https://accounts.google.com/gsi/client" async defer onload="gisLoaded()"></script>
+    <script defer src="assets/js/app.js"></script>
 </head>
 <body>
     <header class="topbar">
         <div class="topbar-left">
-            <h1>Panel UCI · Ingavi (ejemplo)</h1>
-            <p class="subtitle">Demo sin Apps Script, con lectura y escritura directa a Google Sheets mediante OAuth</p>
+            <h1>Panel de Pacientes UCI</h1>
+            <p class="subtitle">Integración directa con Google Sheets · Hoja BASE_UCI</p>
         </div>
         <div class="topbar-right">
-            <button id="btn-auth" class="btn primary" disabled>Conectar con Google</button>
-            <span id="auth-status" class="auth-status">Desconectado</span>
+            <button id="btnConnect" disabled>Conectar con Google</button>
+            <span id="authStatus" class="status-badge status-disconnected">Desconectado</span>
         </div>
     </header>
 
-    <main class="layout">
-        <section class="panel panel-meta">
-            <h2>Configuración de conexión</h2>
+    <main class="main-layout">
+        <section class="card auth-card">
+            <h2>Autenticación y fuente de datos</h2>
             <p>
-                Este ejemplo asume que ya configuró un proyecto en Google Cloud, habilitó la API de Google Sheets
-                y creó un cliente OAuth para aplicaciones web. Debe completar las constantes en <code>assets/js/app.js</code>.
+                Este panel se conecta a una hoja de cálculo de Google Sheets utilizando OAuth 2.0 del lado del cliente.
+                Los datos se leen y se escriben directamente en la hoja <strong>BASE_UCI</strong> del libro configurado.
             </p>
-            <ul class="config-list">
-                <li><strong>CLIENT_ID</strong> del tipo <code>xxxxxxxx.apps.googleusercontent.com</code></li>
-                <li><strong>API_KEY</strong> asociada al proyecto</li>
-                <li><strong>SHEET_ID</strong> de la hoja de cálculo con la base UCI</li>
-                <li><strong>SHEET_NAME</strong> con el nombre de la pestaña, por ejemplo <code>BASE_UCI</code></li>
+            <ul class="info-list">
+                <li><strong>ID de hoja de cálculo</strong>: <code id="sheetIdLabel"></code></li>
+                <li><strong>Nombre de hoja</strong>: <code id="sheetNameLabel"></code></li>
+                <li><strong>Alcance</strong>: <code>https://www.googleapis.com/auth/spreadsheets</code></li>
             </ul>
-            <p>
-                Una vez completados estos valores y publicado el repositorio en GitHub Pages, podrá usar este panel
-                sin necesidad de Apps Script, siempre que el usuario se autentique con una cuenta que tenga acceso
-                de lectura y escritura a la hoja de cálculo.
-            </p>
         </section>
 
-        <section class="panel panel-kpis">
-            <h2>Indicadores rápidos</h2>
-            <div class="kpi-grid">
-                <div class="kpi-card">
-                    <div class="kpi-label">Pacientes en base</div>
-                    <div class="kpi-value" id="kpi-total">0</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Edad promedio</div>
-                    <div class="kpi-value" id="kpi-edad-prom">0</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Porcentaje mujeres</div>
-                    <div class="kpi-value" id="kpi-mujeres">0 %</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Tasa de mortalidad</div>
-                    <div class="kpi-value" id="kpi-mortalidad">0 %</div>
-                </div>
-            </div>
+        <section class="kpi-grid">
+            <article class="card kpi-card">
+                <h3>Total de pacientes</h3>
+                <p id="kpiTotalPacientes" class="kpi-value">–</p>
+                <p class="kpi-caption">Registros con fecha de ingreso válida</p>
+            </article>
+            <article class="card kpi-card">
+                <h3>Edad media</h3>
+                <p id="kpiEdadMedia" class="kpi-value">–</p>
+                <p class="kpi-caption">En años</p>
+            </article>
+            <article class="card kpi-card">
+                <h3>Proporción de mujeres</h3>
+                <p id="kpiFem" class="kpi-value">–</p>
+                <p class="kpi-caption">Sobre casos con sexo informado</p>
+            </article>
+            <article class="card kpi-card">
+                <h3>Tasa de mortalidad</h3>
+                <p id="kpiMort" class="kpi-value">–</p>
+                <p class="kpi-caption">Óbitos sobre egresos con condición informada</p>
+            </article>
         </section>
 
-        <section class="panel panel-filtros">
-            <h2>Filtros básicos</h2>
+        <section class="card filters-card">
+            <h2>Filtros analíticos</h2>
             <div class="filters-grid">
                 <div class="form-group">
-                    <label for="f-fecha-desde">Fecha ingreso desde</label>
-                    <input type="date" id="f-fecha-desde">
+                    <label for="fDesde">Ingreso desde</label>
+                    <input type="date" id="fDesde">
                 </div>
                 <div class="form-group">
-                    <label for="f-fecha-hasta">Fecha ingreso hasta</label>
-                    <input type="date" id="f-fecha-hasta">
+                    <label for="fHasta">Ingreso hasta</label>
+                    <input type="date" id="fHasta">
                 </div>
                 <div class="form-group">
-                    <label for="f-sexo">Sexo</label>
-                    <select id="f-sexo">
+                    <label for="fSexo">Sexo</label>
+                    <select id="fSexo">
                         <option value="">Todos</option>
                         <option value="F">Femenino</option>
                         <option value="M">Masculino</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="f-estado">Condición de egreso</label>
-                    <select id="f-estado">
-                        <option value="">Todos</option>
-                        <option value="VIVO">Vivo</option>
-                        <option value="FALLECIDO">Fallecido</option>
+                    <label for="fCond">Condición al egreso</label>
+                    <select id="fCond">
+                        <option value="">Todas</option>
+                        <option value="vivo">Vivo/Egreso vivo</option>
+                        <option value="obito">Óbito/Fallecido</option>
                     </select>
                 </div>
-                <div class="form-actions">
-                    <button id="btn-aplicar-filtros" class="btn secondary">Aplicar filtros</button>
-                    <button id="btn-reset-filtros" class="btn ghost">Limpiar</button>
+                <div class="filters-actions">
+                    <button id="btnAplicarFiltros">Aplicar filtros</button>
+                    <button id="btnLimpiarFiltros" class="secondary">Limpiar</button>
                 </div>
             </div>
         </section>
 
-        <section class="panel panel-graficos">
-            <h2>Gráficos de apoyo</h2>
-            <div class="charts-grid">
-                <div class="chart-card">
-                    <h3>Ingresos por mes</h3>
-                    <canvas id="chart-ingresos"></canvas>
-                </div>
-                <div class="chart-card">
-                    <h3>Distribución por grupo etario</h3>
-                    <canvas id="chart-edad"></canvas>
-                </div>
-            </div>
+        <section class="charts-layout">
+            <article class="card chart-card">
+                <h2>Ingresos mensuales</h2>
+                <canvas id="chartIngresos"></canvas>
+            </article>
+            <article class="card chart-card">
+                <h2>Distribución de edades</h2>
+                <canvas id="chartEdades"></canvas>
+            </article>
         </section>
 
-        <section class="panel panel-tabla">
-            <h2>Base de pacientes</h2>
+        <section class="card table-card">
+            <div class="table-header">
+                <h2>Tabla de registros</h2>
+                <div class="table-actions">
+                    <input type="text" id="searchBox" placeholder="Buscar por nombre, diagnóstico, etc.">
+                    <span id="tableSummary" class="table-summary">0 registros</span>
+                </div>
+            </div>
             <div class="table-wrapper">
-                <table id="tabla-pacientes">
+                <table id="dataTable">
                     <thead>
-                        <tr id="tabla-header"></tr>
+                        <tr id="tableHeadRow"></tr>
                     </thead>
-                    <tbody id="tabla-body">
-                        <!-- Filas dinámicas -->
-                    </tbody>
+                    <tbody id="tableBody"></tbody>
                 </table>
             </div>
         </section>
 
-        <section class="panel panel-form">
-            <h2>Registrar nuevo caso</h2>
-            <p class="help-text">
-                Este formulario es ilustrativo. Debe ajustar los nombres de las variables para que coincidan con las
-                columnas de su hoja de cálculo. El mismo mecanismo se puede ampliar con más campos clínicos.
+        <section class="card form-card">
+            <h2>Registrar nuevo paciente</h2>
+            <p class="form-caption">
+                Este formulario añade una nueva fila al final de la hoja <strong>BASE_UCI</strong>, mapeando los campos
+                a las columnas existentes. Los campos no definidos se completan en blanco.
             </p>
-            <form id="form-registro" autocomplete="off">
+            <form id="recordForm">
                 <div class="form-grid">
                     <div class="form-group">
-                        <label for="r-historia">Nro. Historia clínica</label>
-                        <input type="text" id="r-historia" required>
+                        <label for="nombre">Nombre y apellido</label>
+                        <input type="text" id="nombre" required>
                     </div>
                     <div class="form-group">
-                        <label for="r-fecha-ingreso">Fecha ingreso UCI</label>
-                        <input type="date" id="r-fecha-ingreso" required>
+                        <label for="fechaIng">Fecha de ingreso</label>
+                        <input type="date" id="fechaIng" required>
                     </div>
                     <div class="form-group">
-                        <label for="r-fecha-egreso">Fecha egreso UCI</label>
-                        <input type="date" id="r-fecha-egreso">
+                        <label for="fechaEgr">Fecha de egreso</label>
+                        <input type="date" id="fechaEgr">
                     </div>
                     <div class="form-group">
-                        <label for="r-edad">Edad</label>
-                        <input type="number" id="r-edad" min="0" max="120">
+                        <label for="edad">Edad</label>
+                        <input type="number" id="edad" min="0" max="120">
                     </div>
                     <div class="form-group">
-                        <label for="r-sexo">Sexo</label>
-                        <select id="r-sexo">
-                            <option value="">Sin dato</option>
+                        <label for="sexoForm">Sexo</label>
+                        <select id="sexoForm">
+                            <option value="">No especificado</option>
                             <option value="F">Femenino</option>
                             <option value="M">Masculino</option>
                         </select>
                     </div>
                     <div class="form-group">
-                        <label for="r-estado">Condición de egreso</label>
-                        <select id="r-estado">
-                            <option value="">Sin dato</option>
+                        <label for="condicion">Condición al egreso</label>
+                        <select id="condicion">
+                            <option value="">No especificado</option>
                             <option value="VIVO">Vivo</option>
-                            <option value="FALLECIDO">Fallecido</option>
+                            <option value="OBITO">Óbito</option>
                         </select>
                     </div>
-                    <div class="form-group full">
-                        <label for="r-notas">Notas clínicas breves</label>
-                        <textarea id="r-notas" rows="2"></textarea>
+                    <div class="form-group full-width">
+                        <label for="diagnostico">Diagnóstico principal / Notas</label>
+                        <textarea id="diagnostico" rows="2"></textarea>
                     </div>
                 </div>
                 <div class="form-actions">
-                    <button type="submit" class="btn primary">Guardar en Google Sheets</button>
-                    <span id="registro-status" class="status-label"></span>
+                    <button type="submit" id="btnGuardarRegistro">Guardar en Google Sheets</button>
+                    <span id="formStatus" class="form-status"></span>
                 </div>
             </form>
         </section>
     </main>
 
     <footer class="footer">
-        <p>Ejemplo técnico para Diego, integración directa GitHub Pages con Google Sheets usando OAuth y Google Identity Services.</p>
+        <p>Panel UCI · Integración con Google Sheets · Ejemplo para despliegue en GitHub Pages.</p>
     </footer>
-
-    <script src="assets/js/app.js"></script>
 </body>
 </html>
