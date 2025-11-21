@@ -1,30 +1,71 @@
-// Configuración para Google Sheets API y OAuth
-// Complete estos valores con los datos de su proyecto en Google Cloud
-const CLIENT_ID = "105432716361922120239.apps.googleusercontent.com";
-const API_KEY = "d073135b5ce946b2577a46df5c4cd5beff5cfca0";
+// Configuración principal
 const SHEET_ID = "1r_OmMJirLBC33Gjtl-mzlAxYKodnK-ld1ARlei7ut7k";
-const SHEET_NAME = "BASE_UCI"; // Ajuste si su pestaña tiene otro nombre
+const SHEET_NAME = "BASE_UCI";
 
-// Alcances y documentación de la API
-const DISCOVERY_DOC = "https://sheets.googleapis.com/$discovery/rest?version=v4";
+// Debe crear un ID de cliente OAuth 2.0 para aplicación web
+// en Google Cloud Console y una API Key del mismo proyecto.
+// No se recomienda exponer credenciales de cuenta de servicio en un frontend estático.
+const CLIENT_ID = "REEMPLAZAR_POR_CLIENT_ID_WEB.apps.googleusercontent.com";
+const API_KEY = "REEMPLAZAR_POR_API_KEY";
+
+// Ámbitos requeridos
 const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
+const DISCOVERY_DOC = "https://sheets.googleapis.com/$discovery/rest?version=v4";
 
+// Estado global
 let tokenClient;
 let gapiInited = false;
 let gisInited = false;
+let accessToken = null;
 
-let UCI_DATA = [];
-let UCI_HEADER = [];
+let header = [];
+let rawData = [];
+let filteredData = [];
 
-// Gráficos
 let chartIngresos = null;
-let chartEdad = null;
+let chartEdades = null;
 
-// Carga inicial de Google API
-function gapiLoaded() {
-    if (typeof gapi === "undefined") return;
-    gapi.load("client", initializeGapiClient);
+// Utilidades
+
+function parseDateOrNull(value) {
+    if (!value) return null;
+
+    // Caso ISO o similar
+    const d1 = new Date(value);
+    if (!isNaN(d1.getTime())) return d1;
+
+    // Caso dd/mm/aaaa
+    if (typeof value === "string" && value.includes("/")) {
+        const parts = value.split("/");
+        if (parts.length === 3) {
+            const [dd, mm, yyyy] = parts;
+            const d2 = new Date(parseInt(yyyy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10));
+            if (!isNaN(d2.getTime())) return d2;
+        }
+    }
+
+    return null;
 }
+
+function parseNumberOrNull(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "number") return isNaN(value) ? null : value;
+    const cleaned = String(value).replace(",", ".").replace(/[^0-9.\-]/g, "");
+    if (!cleaned) return null;
+    const num = Number(cleaned);
+    return isNaN(num) ? null : num;
+}
+
+function normalizarTexto(value) {
+    if (!value) return "";
+    return String(value).toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+}
+
+// Inicialización GAPI y GIS
+
+window.gapiLoaded = function gapiLoaded() {
+    gapi.load("client", initializeGapiClient);
+};
 
 async function initializeGapiClient() {
     try {
@@ -33,474 +74,508 @@ async function initializeGapiClient() {
             discoveryDocs: [DISCOVERY_DOC]
         });
         gapiInited = true;
-        maybeEnableAuth();
+        maybeEnableConnect();
     } catch (err) {
         console.error("Error inicializando gapi", err);
-        const status = document.getElementById("auth-status");
-        if (status) status.textContent = "Error al inicializar cliente API";
+        setAuthStatus("Error inicializando cliente API", false);
     }
 }
 
-function gisLoaded() {
-    if (typeof google === "undefined" || !google.accounts || !google.accounts.oauth2) return;
+window.gisLoaded = function gisLoaded() {
     tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
         scope: SCOPES,
-        callback: "" // Se setea dinámicamente
+        callback: async (resp) => {
+            if (resp && resp.access_token) {
+                accessToken = resp.access_token;
+                gapi.client.setToken({ access_token: accessToken });
+                setAuthStatus("Conectado", true);
+                await loadSheetData();
+            }
+        },
     });
     gisInited = true;
-    maybeEnableAuth();
-}
+    maybeEnableConnect();
+};
 
-function maybeEnableAuth() {
-    if (!gapiInited || !gisInited) return;
-    const btnAuth = document.getElementById("btn-auth");
-    if (btnAuth) {
-        btnAuth.disabled = false;
-        btnAuth.addEventListener("click", handleAuthClick);
+function maybeEnableConnect() {
+    if (gapiInited && gisInited) {
+        const btn = document.getElementById("btnConnect");
+        btn.disabled = false;
+        btn.addEventListener("click", handleAuthClick);
     }
-    const btnFiltros = document.getElementById("btn-aplicar-filtros");
-    if (btnFiltros) btnFiltros.addEventListener("click", aplicarFiltros);
-    const btnReset = document.getElementById("btn-reset-filtros");
-    if (btnReset) btnReset.addEventListener("click", resetFiltros);
-
-    const form = document.getElementById("form-registro");
-    if (form) form.addEventListener("submit", handleRegistroSubmit);
 }
 
 function handleAuthClick() {
-    const status = document.getElementById("auth-status");
-    if (!tokenClient) {
-        if (status) status.textContent = "Token client no inicializado";
-        return;
-    }
-
-    tokenClient.callback = async (resp) => {
-        if (resp.error) {
-            console.error(resp);
-            if (status) status.textContent = "Error en autenticación";
-            return;
-        }
-        if (status) status.textContent = "Sesión iniciada";
-        await loadData();
-    };
-
-    if (gapi.client.getToken() === null) {
+    if (!accessToken) {
         tokenClient.requestAccessToken({ prompt: "consent" });
     } else {
-        tokenClient.requestAccessToken({ prompt: "" });
+        loadSheetData();
     }
 }
 
-// Lectura de datos desde Google Sheets
-async function loadData() {
-    const status = document.getElementById("auth-status");
+// Lectura de datos
+
+async function loadSheetData() {
     try {
         const response = await gapi.client.sheets.spreadsheets.values.get({
             spreadsheetId: SHEET_ID,
             range: SHEET_NAME
         });
 
-        const values = response.result.values;
-        if (!values || values.length === 0) {
-            if (status) status.textContent = "Hoja vacía o sin datos";
-            UCI_DATA = [];
-            UCI_HEADER = [];
-            renderTabla();
-            actualizarKpis();
-            actualizarGraficos();
+        const values = response.result.values || [];
+        if (!values.length) {
+            header = [];
+            rawData = [];
+            filteredData = [];
+            renderAll();
             return;
         }
 
-        UCI_HEADER = values[0];
-        UCI_DATA = values.slice(1).map((row) => {
+        header = values[0].map(h => String(h).trim());
+        rawData = values.slice(1).map(row => {
             const obj = {};
-            UCI_HEADER.forEach((col, idx) => {
+            header.forEach((col, idx) => {
                 obj[col] = row[idx] !== undefined ? row[idx] : "";
             });
             return obj;
         });
-
-        if (status) status.textContent = "Datos cargados (" + UCI_DATA.length + " filas)";
-
-        renderTabla();
-        actualizarKpis();
-        actualizarGraficos();
-
+        filteredData = rawData.slice();
+        renderAll();
     } catch (err) {
-        console.error("Error al leer datos de Sheets", err);
-        if (status) status.textContent = "Error al leer datos de Sheets";
+        console.error("Error leyendo la hoja", err);
+        setAuthStatus("Error leyendo datos", false);
     }
 }
 
-// Render de tabla
-function renderTabla(dataOpt) {
-    const data = dataOpt || UCI_DATA;
-    const theadRow = document.getElementById("tabla-header");
-    const tbody = document.getElementById("tabla-body");
-    if (!theadRow || !tbody) return;
+// Escritura de datos
 
-    theadRow.innerHTML = "";
-    tbody.innerHTML = "";
-
-    if (!UCI_HEADER || UCI_HEADER.length === 0) return;
-
-    UCI_HEADER.forEach((col) => {
-        const th = document.createElement("th");
-        th.textContent = col;
-        theadRow.appendChild(th);
-    });
-
-    data.forEach((row) => {
-        const tr = document.createElement("tr");
-        UCI_HEADER.forEach((col) => {
-            const td = document.createElement("td");
-            td.textContent = row[col] !== undefined ? row[col] : "";
-            tr.appendChild(td);
-        });
-        tbody.appendChild(tr);
-    });
+async function appendRecord(record) {
+    if (!header.length) {
+        throw new Error("No hay encabezados definidos en la hoja");
+    }
+    const rowToAppend = header.map(col => record[col] !== undefined ? record[col] : "");
+    const req = {
+        spreadsheetId: SHEET_ID,
+        range: SHEET_NAME,
+        valueInputOption: "USER_ENTERED",
+        insertDataOption: "INSERT_ROWS",
+        resource: {
+            values: [rowToAppend]
+        }
+    };
+    await gapi.client.sheets.spreadsheets.values.append(req);
 }
 
-// Conversión segura de fecha en formato ISO o dd/mm/aaaa
-function parseFecha(valor) {
-    if (!valor) return null;
-    const v = String(valor).trim();
-    if (!v) return null;
+// Renderizado general
 
-    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
-        const d = new Date(v + "T00:00:00");
-        return isNaN(d.getTime()) ? null : d;
+function renderAll() {
+    updateKpis();
+    updateCharts();
+    updateTable();
+    document.getElementById("sheetIdLabel").textContent = SHEET_ID;
+    document.getElementById("sheetNameLabel").textContent = SHEET_NAME;
+}
+
+// KPIs
+
+function updateKpis() {
+    const kpiTotalPacientes = document.getElementById("kpiTotalPacientes");
+    const kpiEdadMedia = document.getElementById("kpiEdadMedia");
+    const kpiFem = document.getElementById("kpiFem");
+    const kpiMort = document.getElementById("kpiMort");
+
+    if (!filteredData.length) {
+        kpiTotalPacientes.textContent = "0";
+        kpiEdadMedia.textContent = "–";
+        kpiFem.textContent = "–";
+        kpiMort.textContent = "–";
+        return;
     }
 
-    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(v)) {
-        const [d, m, a] = v.split("/").map((x) => parseInt(x, 10));
-        if (!d || !m || !a) return null;
-        const fecha = new Date(a, m - 1, d);
-        return isNaN(fecha.getTime()) ? null : fecha;
-    }
+    const colFechaIng = buscarColumna(["fecha_de_ingreso", "fecha_ingreso", "fecha ingreso"]);
+    const colEdad = buscarColumna(["edad"]);
+    const colSexo = buscarColumna(["sexo"]);
+    const colCond = buscarColumna(["condicion_al_egreso", "condicion egreso", "estado_egreso"]);
 
-    const parsed = new Date(v);
-    if (!isNaN(parsed.getTime())) return parsed;
+    let totalPacientes = 0;
+    let sumEdad = 0;
+    let nEdad = 0;
+    let nFem = 0;
+    let nSexo = 0;
+    let nObito = 0;
+    let nCond = 0;
 
-    return null;
-}
-
-function diffDias(fechaIni, fechaFin) {
-    if (!fechaIni || !fechaFin) return null;
-    const ms = fechaFin.getTime() - fechaIni.getTime();
-    return ms / (1000 * 60 * 60 * 24);
-}
-
-function toNumber(x) {
-    if (x === null || x === undefined || x === "") return null;
-    const v = String(x).replace(",", ".").trim();
-    const n = parseFloat(v);
-    return isNaN(n) ? null : n;
-}
-
-// Cálculo de indicadores
-function actualizarKpis(dataOpt) {
-    const data = dataOpt || UCI_DATA;
-
-    const total = data.length;
-    const edades = [];
-    let nF = 0;
-    let nConSexo = 0;
-    let nFallecidos = 0;
-    let nConEstado = 0;
-
-    data.forEach((row) => {
-        const edad = toNumber(row["edad"] || row["Edad"] || row["EDAD"]);
-        if (edad !== null) edades.push(edad);
-
-        const sexo = (row["sexo"] || row["Sexo"] || row["SEXO"] || "").toString().trim().toUpperCase();
-        if (sexo) {
-            nConSexo += 1;
-            if (sexo === "F" || sexo === "FEMENINO") nF += 1;
+    for (const r of filteredData) {
+        if (colFechaIng && parseDateOrNull(r[colFechaIng])) {
+            totalPacientes += 1;
         }
 
-        const estado = (row["estado_egreso"] || row["Estado egreso"] || row["CONDICION"] || row["condicion"] || "").toString().trim().toUpperCase();
-        if (estado) {
-            nConEstado += 1;
-            if (estado.indexOf("FALLECID") >= 0) nFallecidos += 1;
+        if (colEdad) {
+            const e = parseNumberOrNull(r[colEdad]);
+            if (e !== null) {
+                sumEdad += e;
+                nEdad += 1;
+            }
         }
-    });
 
-    const kpiTotal = document.getElementById("kpi-total");
-    const kpiEdadProm = document.getElementById("kpi-edad-prom");
-    const kpiMujeres = document.getElementById("kpi-mujeres");
-    const kpiMortalidad = document.getElementById("kpi-mortalidad");
+        if (colSexo) {
+            const sx = normalizarTexto(r[colSexo]);
+            if (sx) {
+                nSexo += 1;
+                if (sx.startsWith("f")) nFem += 1;
+            }
+        }
 
-    if (kpiTotal) kpiTotal.textContent = total.toString();
-
-    if (kpiEdadProm) {
-        if (edades.length === 0) {
-            kpiEdadProm.textContent = "s/d";
-        } else {
-            const prom = edades.reduce((a, b) => a + b, 0) / edades.length;
-            kpiEdadProm.textContent = prom.toFixed(1);
+        if (colCond) {
+            const c = normalizarTexto(r[colCond]);
+            if (c) {
+                nCond += 1;
+                if (c.includes("obito") || c.includes("óbito") || c.includes("falle")) {
+                    nObito += 1;
+                }
+            }
         }
     }
 
-    if (kpiMujeres) {
-        if (nConSexo === 0) {
-            kpiMujeres.textContent = "s/d";
-        } else {
-            const pF = (100 * nF) / nConSexo;
-            kpiMujeres.textContent = pF.toFixed(1) + " %";
-        }
-    }
-
-    if (kpiMortalidad) {
-        if (nConEstado === 0) {
-            kpiMortalidad.textContent = "s/d";
-        } else {
-            const pM = (100 * nFallecidos) / nConEstado;
-            kpiMortalidad.textContent = pM.toFixed(1) + " %";
-        }
-    }
-}
-
-// Filtros
-function aplicarFiltros() {
-    const fDesde = document.getElementById("f-fecha-desde");
-    const fHasta = document.getElementById("f-fecha-hasta");
-    const fSexo = document.getElementById("f-sexo");
-    const fEstado = document.getElementById("f-estado");
-
-    const vDesde = fDesde && fDesde.value ? new Date(fDesde.value + "T00:00:00") : null;
-    const vHasta = fHasta && fHasta.value ? new Date(fHasta.value + "T00:00:00") : null;
-    const vSexo = fSexo && fSexo.value ? fSexo.value.toString().trim().toUpperCase() : "";
-    const vEstado = fEstado && fEstado.value ? fEstado.value.toString().trim().toUpperCase() : "";
-
-    const dataFiltrada = UCI_DATA.filter((row) => {
-        let ok = true;
-
-        const fechaIngStr = row["fecha_ingreso"] || row["Fecha ingreso"] || row["FECHA_INGRESO"] || row["fecha_ingreso_uci"];
-        const fIng = parseFecha(fechaIngStr);
-
-        if (vDesde && fIng && fIng < vDesde) ok = false;
-        if (vHasta && fIng && fIng > vHasta) ok = false;
-
-        if (vSexo) {
-            const sexo = (row["sexo"] || row["Sexo"] || row["SEXO"] || "").toString().trim().toUpperCase();
-            if (sexo !== vSexo) ok = false;
-        }
-
-        if (vEstado) {
-            const estado = (row["estado_egreso"] || row["Estado egreso"] || row["CONDICION"] || row["condicion"] || "").toString().trim().toUpperCase();
-            if (estado.indexOf(vEstado) < 0) ok = false;
-        }
-
-        return ok;
-    });
-
-    renderTabla(dataFiltrada);
-    actualizarKpis(dataFiltrada);
-    actualizarGraficos(dataFiltrada);
-}
-
-function resetFiltros() {
-    const ids = ["f-fecha-desde", "f-fecha-hasta", "f-sexo", "f-estado"];
-    ids.forEach((id) => {
-        const el = document.getElementById(id);
-        if (el) el.value = "";
-    });
-    renderTabla(UCI_DATA);
-    actualizarKpis(UCI_DATA);
-    actualizarGraficos(UCI_DATA);
+    kpiTotalPacientes.textContent = String(totalPacientes);
+    kpiEdadMedia.textContent = nEdad > 0 ? (sumEdad / nEdad).toFixed(1) : "–";
+    kpiFem.textContent = nSexo > 0 ? (100 * nFem / nSexo).toFixed(1) + " %" : "–";
+    kpiMort.textContent = nCond > 0 ? (100 * nObito / nCond).toFixed(1) + " %" : "–";
 }
 
 // Gráficos
-function actualizarGraficos(dataOpt) {
-    const data = dataOpt || UCI_DATA;
-    actualizarGraficoIngresos(data);
-    actualizarGraficoEdad(data);
+
+function updateCharts() {
+    updateChartIngresos();
+    updateChartEdades();
 }
 
-function actualizarGraficoIngresos(data) {
-    const ctx = document.getElementById("chart-ingresos");
-    if (!ctx) return;
+function updateChartIngresos() {
+    const canvas = document.getElementById("chartIngresos");
+    if (!canvas) return;
 
-    const conteo = new Map();
-
-    data.forEach((row) => {
-        const fechaIngStr = row["fecha_ingreso"] || row["Fecha ingreso"] || row["FECHA_INGRESO"] || row["fecha_ingreso_uci"];
-        const fIng = parseFecha(fechaIngStr);
-        if (!fIng) return;
-        const y = fIng.getFullYear();
-        const m = (fIng.getMonth() + 1).toString().padStart(2, "0");
-        const clave = y + "-" + m;
-        conteo.set(clave, (conteo.get(clave) || 0) + 1);
-    });
-
-    const etiquetas = Array.from(conteo.keys()).sort();
-    const valores = etiquetas.map((k) => conteo.get(k));
-
-    const dataChart = {
-        labels: etiquetas,
-        datasets: [{
-            label: "Ingresos UCI",
-            data: valores
-        }]
-    };
-
-    const opciones = {
-        responsive: true,
-        plugins: {
-            legend: {
-                display: false
-            }
-        },
-        scales: {
-            x: {
-                ticks: { color: "#cbd5f5" },
-                grid: { color: "rgba(148,163,184,0.3)" }
-            },
-            y: {
-                ticks: { color: "#cbd5f5" },
-                grid: { color: "rgba(148,163,184,0.3)" }
-            }
+    const colFechaIng = buscarColumna(["fecha_de_ingreso", "fecha_ingreso", "fecha ingreso"]);
+    if (!colFechaIng || !filteredData.length) {
+        if (chartIngresos) {
+            chartIngresos.destroy();
+            chartIngresos = null;
         }
-    };
-
-    if (chartIngresos) chartIngresos.destroy();
-    chartIngresos = new Chart(ctx, {
-        type: "bar",
-        data: dataChart,
-        options: opciones
-    });
-}
-
-function actualizarGraficoEdad(data) {
-    const ctx = document.getElementById("chart-edad");
-    if (!ctx) return;
-
-    const cortes = [0, 20, 40, 60, 80, 120];
-    const etiquetas = ["0-19", "20-39", "40-59", "60-79", "80+"];
-    const conteo = [0, 0, 0, 0, 0];
-
-    data.forEach((row) => {
-        const edad = toNumber(row["edad"] || row["Edad"] || row["EDAD"]);
-        if (edad === null) return;
-        if (edad < 20) conteo[0]++;
-        else if (edad < 40) conteo[1]++;
-        else if (edad < 60) conteo[2]++;
-        else if (edad < 80) conteo[3]++;
-        else conteo[4]++;
-    });
-
-    const dataChart = {
-        labels: etiquetas,
-        datasets: [{
-            label: "Pacientes",
-            data: conteo
-        }]
-    };
-
-    const opciones = {
-        responsive: true,
-        plugins: {
-            legend: {
-                display: false
-            }
-        },
-        scales: {
-            x: {
-                ticks: { color: "#cbd5f5" },
-                grid: { color: "rgba(148,163,184,0.3)" }
-            },
-            y: {
-                ticks: { color: "#cbd5f5" },
-                grid: { color: "rgba(148,163,184,0.3)" }
-            }
-        }
-    };
-
-    if (chartEdad) chartEdad.destroy();
-    chartEdad = new Chart(ctx, {
-        type: "bar",
-        data: dataChart,
-        options: opciones
-    });
-}
-
-// Registro de nuevo caso, escritura en Google Sheets
-async function handleRegistroSubmit(ev) {
-    ev.preventDefault();
-    const status = document.getElementById("registro-status");
-    if (status) status.textContent = "";
-
-    if (!gapiInited || !gapi.client || !gapi.client.sheets) {
-        if (status) status.textContent = "Cliente API no inicializado";
         return;
     }
 
-    const historia = document.getElementById("r-historia").value.trim();
-    const fIng = document.getElementById("r-fecha-ingreso").value;
-    const fEgr = document.getElementById("r-fecha-egreso").value;
-    const edad = document.getElementById("r-edad").value.trim();
-    const sexo = document.getElementById("r-sexo").value;
-    const estado = document.getElementById("r-estado").value;
-    const notas = document.getElementById("r-notas").value.trim();
+    const counts = new Map();
 
-    if (!historia || !fIng) {
-        if (status) status.textContent = "Historia y fecha de ingreso son obligatorias";
+    for (const r of filteredData) {
+        const d = parseDateOrNull(r[colFechaIng]);
+        if (!d) continue;
+        const key = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+        counts.set(key, (counts.get(key) || 0) + 1);
+    }
+
+    const labels = Array.from(counts.keys()).sort();
+    const data = labels.map(k => counts.get(k));
+
+    if (chartIngresos) {
+        chartIngresos.destroy();
+    }
+
+    chartIngresos = new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: {
+            labels,
+            datasets: [{
+                label: "Ingresos por mes",
+                data,
+                tension: 0.25
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: "#e5e7eb" } }
+            },
+            scales: {
+                x: {
+                    ticks: { color: "#9ca3af" },
+                    grid: { color: "rgba(55,65,81,0.4)" }
+                },
+                y: {
+                    ticks: { color: "#9ca3af" },
+                    grid: { color: "rgba(55,65,81,0.4)" }
+                }
+            }
+        }
+    });
+}
+
+function updateChartEdades() {
+    const canvas = document.getElementById("chartEdades");
+    if (!canvas) return;
+
+    const colEdad = buscarColumna(["edad"]);
+    if (!colEdad || !filteredData.length) {
+        if (chartEdades) {
+            chartEdades.destroy();
+            chartEdades = null;
+        }
         return;
     }
 
-    const record = {
-        "historia_clinica": historia,
-        "fecha_ingreso": fIng,
-        "fecha_egreso": fEgr || "",
-        "edad": edad || "",
-        "sexo": sexo || "",
-        "estado_egreso": estado || "",
-        "notas": notas || ""
-    };
+    const bins = [
+        { label: "< 30", min: 0, max: 29 },
+        { label: "30 – 44", min: 30, max: 44 },
+        { label: "45 – 59", min: 45, max: 59 },
+        { label: "60 – 74", min: 60, max: 74 },
+        { label: "≥ 75", min: 75, max: Infinity }
+    ];
 
-    try {
-        const header = await obtenerHeaderDesdeSheets();
-        const fila = header.map((col) => record[col] !== undefined ? record[col] : "");
+    const counts = new Array(bins.length).fill(0);
 
-        await gapi.client.sheets.spreadsheets.values.append({
-            spreadsheetId: SHEET_ID,
-            range: SHEET_NAME,
-            valueInputOption: "USER_ENTERED",
-            insertDataOption: "INSERT_ROWS",
-            resource: {
-                values: [fila]
+    for (const r of filteredData) {
+        const e = parseNumberOrNull(r[colEdad]);
+        if (e === null) continue;
+        for (let i = 0; i < bins.length; i++) {
+            if (e >= bins[i].min && e <= bins[i].max) {
+                counts[i] += 1;
+                break;
+            }
+        }
+    }
+
+    const labels = bins.map(b => b.label);
+
+    if (chartEdades) {
+        chartEdades.destroy();
+    }
+
+    chartEdades = new Chart(canvas.getContext("2d"), {
+        type: "bar",
+        data: {
+            labels,
+            datasets: [{
+                label: "Pacientes por grupo de edad",
+                data: counts
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: "#e5e7eb" } }
+            },
+            scales: {
+                x: {
+                    ticks: { color: "#9ca3af" },
+                    grid: { display: false }
+                },
+                y: {
+                    ticks: { color: "#9ca3af" },
+                    grid: { color: "rgba(55,65,81,0.4)" }
+                }
+            }
+        }
+    });
+}
+
+// Tabla
+
+function updateTable() {
+    const headRow = document.getElementById("tableHeadRow");
+    const body = document.getElementById("tableBody");
+    const summary = document.getElementById("tableSummary");
+
+    headRow.innerHTML = "";
+    body.innerHTML = "";
+
+    if (!header.length) {
+        summary.textContent = "0 registros";
+        return;
+    }
+
+    for (const col of header) {
+        const th = document.createElement("th");
+        th.textContent = col;
+        headRow.appendChild(th);
+    }
+
+    for (const r of filteredData) {
+        const tr = document.createElement("tr");
+        for (const col of header) {
+            const td = document.createElement("td");
+            td.textContent = r[col] !== undefined ? r[col] : "";
+            tr.appendChild(td);
+        }
+        body.appendChild(tr);
+    }
+
+    summary.textContent = filteredData.length + " registros";
+}
+
+// Filtros
+
+function aplicarFiltros() {
+    if (!rawData.length) {
+        filteredData = [];
+        renderAll();
+        return;
+    }
+
+    const colFechaIng = buscarColumna(["fecha_de_ingreso", "fecha_ingreso", "fecha ingreso"]);
+    const colSexo = buscarColumna(["sexo"]);
+    const colCond = buscarColumna(["condicion_al_egreso", "condicion egreso", "estado_egreso"]);
+
+    const fDesde = document.getElementById("fDesde").value;
+    const fHasta = document.getElementById("fHasta").value;
+    const fSexo = document.getElementById("fSexo").value;
+    const fCond = document.getElementById("fCond").value;
+
+    const dDesde = fDesde ? new Date(fDesde) : null;
+    const dHasta = fHasta ? new Date(fHasta) : null;
+
+    filteredData = rawData.filter(r => {
+        // Fecha ingreso
+        if (colFechaIng) {
+            const d = parseDateOrNull(r[colFechaIng]);
+            if (dDesde && (!d || d < dDesde)) return false;
+            if (dHasta && (!d || d > dHasta)) return false;
+        }
+
+        // Sexo
+        if (fSexo && colSexo) {
+            const sx = normalizarTexto(r[colSexo]);
+            if (!sx.startsWith(fSexo.toLowerCase())) return false;
+        }
+
+        // Condición
+        if (fCond && colCond) {
+            const c = normalizarTexto(r[colCond]);
+            if (!c) return false;
+            if (fCond === "vivo" && !(c.includes("vivo") || c.includes("alta"))) return false;
+            if (fCond === "obito" && !(c.includes("obito") || c.includes("óbito") || c.includes("falle"))) return false;
+        }
+
+        return true;
+    });
+
+    renderAll();
+}
+
+function limpiarFiltros() {
+    document.getElementById("fDesde").value = "";
+    document.getElementById("fHasta").value = "";
+    document.getElementById("fSexo").value = "";
+    document.getElementById("fCond").value = "";
+    filteredData = rawData.slice();
+    renderAll();
+}
+
+// Búsqueda en tabla
+
+function aplicarBusqueda() {
+    const q = normalizarTexto(document.getElementById("searchBox").value);
+    if (!q) {
+        filteredData = rawData.slice();
+        renderAll();
+        return;
+    }
+
+    filteredData = rawData.filter(r => {
+        return Object.values(r).some(v => normalizarTexto(v).includes(q));
+    });
+    renderAll();
+}
+
+// Formularios
+
+function setAuthStatus(text, connected) {
+    const el = document.getElementById("authStatus");
+    el.textContent = text;
+    el.classList.toggle("status-connected", !!connected);
+    el.classList.toggle("status-disconnected", !connected);
+}
+
+function setFormStatus(text, type) {
+    const el = document.getElementById("formStatus");
+    el.textContent = text || "";
+    el.style.color = type === "error" ? "#f97373" : type === "success" ? "#22c55e" : "#9ca3af";
+}
+
+// Búsqueda de columnas por nombre aproximado
+
+function buscarColumna(candidatos) {
+    if (!header || !header.length) return null;
+    const normHeader = header.map(h => normalizarTexto(h));
+    for (const cand of candidatos) {
+        const nc = normalizarTexto(cand);
+        const idx = normHeader.findIndex(h => h === nc);
+        if (idx !== -1) return header[idx];
+    }
+    // búsqueda parcial
+    for (const cand of candidatos) {
+        const nc = normalizarTexto(cand);
+        const idx = normHeader.findIndex(h => h.includes(nc));
+        if (idx !== -1) return header[idx];
+    }
+    return null;
+}
+
+// Eventos DOM
+
+document.addEventListener("DOMContentLoaded", () => {
+    const btnFiltros = document.getElementById("btnAplicarFiltros");
+    const btnLimpiar = document.getElementById("btnLimpiarFiltros");
+    const searchBox = document.getElementById("searchBox");
+    const form = document.getElementById("recordForm");
+
+    if (btnFiltros) btnFiltros.addEventListener("click", aplicarFiltros);
+    if (btnLimpiar) btnLimpiar.addEventListener("click", limpiarFiltros);
+    if (searchBox) searchBox.addEventListener("input", () => {
+        aplicarBusqueda();
+    });
+
+    if (form) {
+        form.addEventListener("submit", async (evt) => {
+            evt.preventDefault();
+            if (!accessToken) {
+                setFormStatus("Debe conectar primero con Google para guardar.", "error");
+                return;
+            }
+            if (!header.length) {
+                setFormStatus("No se han podido leer los encabezados de la hoja.", "error");
+                return;
+            }
+
+            const record = {};
+
+            // Mapeo principal de campos
+            const colNombre = buscarColumna(["nombre_y_apellido", "nombre y apellido", "paciente"]);
+            const colFechaIng = buscarColumna(["fecha_de_ingreso", "fecha_ingreso", "fecha ingreso"]);
+            const colFechaEgr = buscarColumna(["fecha_de_egreso", "fecha_egreso", "fecha egreso"]);
+            const colEdad = buscarColumna(["edad"]);
+            const colSexo = buscarColumna(["sexo"]);
+            const colCond = buscarColumna(["condicion_al_egreso", "condicion egreso", "estado_egreso"]);
+            const colDiag = buscarColumna(["diagnostico", "diagnostico_principal"]);
+
+            if (colNombre) record[colNombre] = document.getElementById("nombre").value.trim();
+            if (colFechaIng) record[colFechaIng] = document.getElementById("fechaIng").value;
+            if (colFechaEgr) record[colFechaEgr] = document.getElementById("fechaEgr").value;
+            if (colEdad) record[colEdad] = document.getElementById("edad").value;
+            if (colSexo) record[colSexo] = document.getElementById("sexoForm").value;
+            if (colCond) record[colCond] = document.getElementById("condicion").value;
+            if (colDiag) record[colDiag] = document.getElementById("diagnostico").value.trim();
+
+            try {
+                setFormStatus("Guardando registro en Google Sheets…", null);
+                await appendRecord(record);
+                setFormStatus("Registro guardado correctamente.", "success");
+                form.reset();
+                await loadSheetData();
+            } catch (err) {
+                console.error("Error guardando registro", err);
+                setFormStatus("Error al guardar el registro.", "error");
             }
         });
-
-        if (status) status.textContent = "Registro guardado correctamente";
-
-        document.getElementById("form-registro").reset();
-
-        await loadData();
-
-    } catch (err) {
-        console.error("Error al escribir en Sheets", err);
-        if (status) status.textContent = "Error al guardar registro";
     }
-}
-
-async function obtenerHeaderDesdeSheets() {
-    if (UCI_HEADER && UCI_HEADER.length > 0) return UCI_HEADER;
-
-    const respuesta = await gapi.client.sheets.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID,
-        range: SHEET_NAME + "!1:1"
-    });
-    const values = respuesta.result.values;
-    if (!values || values.length === 0) return [];
-    UCI_HEADER = values[0];
-    return UCI_HEADER;
-}
-
-// Inicialización básica del DOM
-document.addEventListener("DOMContentLoaded", () => {
-    const status = document.getElementById("auth-status");
-    if (status) status.textContent = "Desconectado (espere carga de librerías Google)";
 });
